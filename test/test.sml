@@ -188,6 +188,104 @@ struct
       val () = checkInt "fromList length" (10, PVec.length v)
       val () = checkBool "fromList toList roundtrip" (true, PVec.toList v = xs)
       val () = checkBool "fromList then push" (true, PVec.toList (PVec.push v 42) = xs @ [42])
+
+      (* ---------------- properties (sml-check) ---------------- *)
+      val () = section "HamtMap properties (sml-check)"
+
+      val smallInt = Check.choose (~1000, 1000)
+      val genPair = Check.tuple2 (smallInt, smallInt)
+      val genList = Check.listOf genPair
+
+      fun showPair (k, v) = "(" ^ Int.toString k ^ "," ^ Int.toString v ^ ")"
+      fun showPairList xs = "[" ^ String.concatWith "," (List.map showPair xs) ^ "]"
+      fun showIntList xs = "[" ^ String.concatWith "," (List.map Int.toString xs) ^ "]"
+
+      fun dedupKeys ks =
+        List.foldr
+          (fn (k, acc) => if List.exists (fn k' => k' = k) acc then acc else k :: acc)
+          [] ks
+
+      val eqInt = (op =) : int * int -> bool
+      fun freshMap () = HamtMap.empty {hash = mixHash, eq = eqInt}
+      fun buildFromPairs xs =
+        List.foldl (fn ((k, v), m) => HamtMap.insert m k v) (freshMap ()) xs
+
+      (* insert-then-find returns the inserted value. *)
+      val () =
+        Harness.check "prop: insert-then-find returns the inserted value"
+          (case Check.quickCheck
+                  (Check.forAll
+                     (Check.tuple3 (genList, smallInt, smallInt))
+                     (fn (xs, k, v) => showPairList xs ^ " k=" ^ Int.toString k
+                                        ^ " v=" ^ Int.toString v)
+                     (fn (xs, k, v) =>
+                        let val m = buildFromPairs xs
+                            val m' = HamtMap.insert m k v
+                        in HamtMap.find m' k = SOME v end)) of
+               Check.Passed _ => true
+             | Check.Failed _ => false)
+
+      (* remove-then-find returns NONE, whether or not the key was present. *)
+      val () =
+        Harness.check "prop: remove-then-find returns NONE"
+          (case Check.quickCheck
+                  (Check.forAll
+                     (Check.tuple2 (genList, smallInt))
+                     (fn (xs, k) => showPairList xs ^ " k=" ^ Int.toString k)
+                     (fn (xs, k) =>
+                        let val m = buildFromPairs xs
+                            val m' = HamtMap.remove m k
+                        in HamtMap.find m' k = NONE end)) of
+               Check.Passed _ => true
+             | Check.Failed _ => false)
+
+      (* toList (unordered) matches the assoc-list oracle exactly, once both
+         sides are sorted -- i.e. the map contains exactly the inserted keys,
+         each bound to its last-written value. *)
+      val () =
+        Harness.check "prop: toList matches the assoc-list oracle"
+          (case Check.quickCheck
+                  (Check.forAll genList showPairList
+                     (fn xs =>
+                        let
+                          val m = buildFromPairs xs
+                          val orc = List.foldl (fn ((k, v), acc) => oInsert acc k v) [] xs
+                        in sortPairs (HamtMap.toList m) = sortPairs orc end)) of
+               Check.Passed _ => true
+             | Check.Failed _ => false)
+
+      (* inserting a set of distinct keys yields a map of exactly that
+         size. *)
+      val () =
+        Harness.check "prop: size after inserting N distinct keys = N"
+          (case Check.quickCheck
+                  (Check.forAll (Check.listOf smallInt) showIntList
+                     (fn ks =>
+                        let val distinct = dedupKeys ks
+                            val m = buildFromPairs (List.map (fn k => (k, k)) distinct)
+                        in HamtMap.size m = List.length distinct end)) of
+               Check.Passed _ => true
+             | Check.Failed _ => false)
+
+      (* re-inserting the same key with a different value overwrites in
+         place: the size doesn't grow and the new value wins. *)
+      val () =
+        Harness.check "prop: insert on an existing key overwrites, not duplicates"
+          (case Check.quickCheck
+                  (Check.forAll
+                     (Check.tuple2 (genList, Check.tuple3 (smallInt, smallInt, smallInt)))
+                     (fn (xs, (k, v1, v2)) =>
+                        showPairList xs ^ " k=" ^ Int.toString k
+                        ^ " v1=" ^ Int.toString v1 ^ " v2=" ^ Int.toString v2)
+                     (fn (xs, (k, v1, v2)) =>
+                        let val m = buildFromPairs xs
+                            val m1 = HamtMap.insert m k v1
+                            val m2 = HamtMap.insert m1 k v2
+                        in HamtMap.find m2 k = SOME v2
+                           andalso HamtMap.size m2 = HamtMap.size m1
+                        end)) of
+               Check.Passed _ => true
+             | Check.Failed _ => false)
     in
       ()
     end

@@ -1,4 +1,5 @@
 package github.com/sjqtentacles/sml-hamt
 
 require {
+  github.com/sjqtentacles/sml-check
 }
